@@ -150,7 +150,7 @@ void MainWindow::refreshLog(){
 void MainWindow::buildDropZone(){
  dropFrame_=new QFrame(this);dropFrame_->setObjectName("emptyPage");dropFrame_->setFrameShape(QFrame::StyledPanel);
  auto* lay=new QVBoxLayout(dropFrame_);lay->setContentsMargins(24,24,24,24);lay->setSpacing(12);lay->addStretch(1);
- dropTitle_=new QLabel("Drop plugin folder, ZIP, RAR, 7Z here",dropFrame_);dropTitle_->setAlignment(Qt::AlignCenter);dropTitle_->setStyleSheet("color:#f2f3f5;font-size:15px;font-weight:600;");
+ dropTitle_=new QLabel("Drop plugin folders, ZIP, RAR or 7Z here - several at once is fine",dropFrame_);dropTitle_->setAlignment(Qt::AlignCenter);dropTitle_->setStyleSheet("color:#f2f3f5;font-size:15px;font-weight:600;");
  pendingLabel_=new QLabel(dropFrame_);pendingLabel_->setAlignment(Qt::AlignCenter);pendingLabel_->setWordWrap(true);pendingLabel_->setStyleSheet("color:#23a559;font-size:12px;font-weight:600;");pendingLabel_->setVisible(false);
  dropBrowseBtn_=new QPushButton("Browse…",dropFrame_);dropBrowseBtn_->setProperty("primary",true);dropBrowseBtn_->setMinimumHeight(32);
  lay->addWidget(dropTitle_);lay->addWidget(pendingLabel_);lay->addWidget(dropBrowseBtn_,0,Qt::AlignHCenter);lay->addStretch(1);
@@ -181,13 +181,47 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* e){if(e->mimeData()->hasUrls()|
 void MainWindow::dragMoveEvent(QDragMoveEvent* e){if(e->mimeData()->hasUrls()||e->mimeData()->hasText())e->acceptProposedAction();}
 bool MainWindow::eventFilter(QObject* w,QEvent* e){return QMainWindow::eventFilter(w,e);}
 void MainWindow::dragLeaveEvent(QDragLeaveEvent* e){Q_UNUSED(e);setDropHighlight(false);}
-void MainWindow::dropEvent(QDropEvent* e){setDropHighlight(false);const QMimeData* m=e->mimeData();QString p;if(m->hasUrls()){for(auto& u:m->urls()){p=u.isLocalFile()?u.toLocalFile():u.toString();if(!p.isEmpty())break;}}else if(m->hasText())p=m->text().trimmed();if(!p.isEmpty()){linkEdit_->setText(p);setPendingPlugin(fromQ(p));}e->acceptProposedAction();}
+void MainWindow::dropEvent(QDropEvent* e){
+ setDropHighlight(false);
+ const QMimeData* m=e->mimeData();
+ std::vector<std::string> dropped;
+ if(m->hasUrls()){
+  for(auto& u:m->urls()){
+   QString p=u.isLocalFile()?u.toLocalFile():u.toString();
+   if(!p.isEmpty())dropped.push_back(fromQ(p));
+  }
+ }else if(m->hasText()){
+  for(auto& line:m->text().split('\n',Qt::SkipEmptyParts)){
+   QString p=line.trimmed();
+   if(!p.isEmpty())dropped.push_back(fromQ(p));
+  }
+ }
+ if(!dropped.empty()){
+  linkEdit_->setText(dropped.size()==1?toQ(dropped[0]):QString());
+  setPendingPlugins(dropped);
+ }
+ e->acceptProposedAction();
+}
 void MainWindow::resizeEvent(QResizeEvent* e){QMainWindow::resizeEvent(e);}
-void MainWindow::setPendingPlugin(const std::string& path){pendingPluginPath_=path;fullPendingPath_=toQ(path);if(path.empty()){pendingLabel_->setVisible(false);}else{pendingLabel_->setText("Selected: "+fullPendingPath_);pendingLabel_->setToolTip(fullPendingPath_);pendingLabel_->setVisible(true);}updateInstallButton();}
+void MainWindow::setPendingPlugin(const std::string& path){
+ if(path.empty())setPendingPlugins(std::vector<std::string>());
+ else setPendingPlugins(std::vector<std::string>{path});
+}
+void MainWindow::setPendingPlugins(const std::vector<std::string>& paths){
+ pendingPlugins_=paths;
+ if(paths.empty()){fullPendingPath_.clear();pendingLabel_->setVisible(false);updateInstallButton();return;}
+ QStringList all;
+ for(auto& p:paths)all<<toQ(p);
+ fullPendingPath_=all.join("\n");
+ pendingLabel_->setText(paths.size()==1?("Selected: "+all.first()):QString("Selected: %1 plugins").arg(paths.size()));
+ pendingLabel_->setToolTip(fullPendingPath_);
+ pendingLabel_->setVisible(true);
+ updateInstallButton();
+}
 void MainWindow::updateInstallButton(){
  bool hasEquicord=equicord::validate(cfg::equicordPath).isValid;
  QString linkText=linkEdit_?linkEdit_->text().trimmed():QString();
- bool hasPending=!pendingPluginPath_.empty() || !linkText.isEmpty();
+ bool hasPending=!pendingPlugins_.empty() || !linkText.isEmpty();
  bool busy=jobRunning_;
  dropBrowseBtn_->setProperty("primary",!hasPending);
  dropBrowseBtn_->setProperty("secondary",hasPending);
@@ -203,7 +237,7 @@ void MainWindow::updateInstallButton(){
 void MainWindow::applyEquicordState(const QString& path,bool isValid,const QString& message){
  if(isValid){banner_->setVisible(false);applyStatus(message,false,false);}
  else{banner_->setVisible(true);bannerLabel_->setText(message.isEmpty()?"Select your Equicord folder. Open Settings…":message);applyStatus(message,false,true);}
- bool hasPending=!pendingPluginPath_.empty() || !linkEdit_->text().trimmed().isEmpty();
+ bool hasPending=!pendingPlugins_.empty() || !linkEdit_->text().trimmed().isEmpty();
  dropBrowseBtn_->setProperty("primary",!hasPending);
  dropBrowseBtn_->setProperty("secondary",hasPending);
  installButton_->setVisible(hasPending);
@@ -266,7 +300,7 @@ std::string MainWindow::workBlocker(){
  if(jobRunning_)return "Wait for current task to finish.";
  auto chk=equicord::validate(cfg::equicordPath);
  if(!chk.isValid)return chk.userMessage;
- bool hasPending=!pendingPluginPath_.empty() || !linkEdit_->text().trimmed().isEmpty();
+ bool hasPending=!pendingPlugins_.empty() || !linkEdit_->text().trimmed().isEmpty();
  if(!hasPending)return "Drop a plugin folder, ZIP, RAR or 7Z, click Browse, or paste a GitHub link above.";
  return "";
 }
@@ -333,10 +367,14 @@ void MainWindow::startInstallFlow(){
  if(!blocker.empty()){applyStatus(toQ(blocker),true,false);return;}
  std::string branch=cfg::discordBranch;if(branch.empty())branch="stable";
  QString linkText=linkEdit_->text().trimmed();
- std::string pluginSrc = !linkText.isEmpty() ? fromQ(linkText) : pendingPluginPath_;
- jobRunning_=true;applyBusy(true,"Installing plugin…");applyProgress(0);
+ std::vector<std::string> sources;
+ if(pendingPlugins_.size()>1)sources=pendingPlugins_;
+ else if(!linkText.isEmpty())sources.push_back(fromQ(linkText));
+ else sources=pendingPlugins_;
+ const size_t total=sources.size();
+ jobRunning_=true;applyBusy(true,total>1?QString("Installing %1 plugins…").arg(total):QString("Installing plugin…"));applyProgress(0);
  if(logView_&&!logView_->isVisible()){logView_->setVisible(true);if(logToggleBtn_)logToggleBtn_->setText("Hide log");}
- std::thread([this,pluginSrc,branch]{
+ std::thread([this,sources,total,branch]{
   if(!ensurePnpmAvailable()){QMetaObject::invokeMethod(this,[this]{applyStatus("Cannot build without Node.js/pnpm.",true,false);applyBusy(false,"");applyProgress(-1);},Qt::QueuedConnection);jobRunning_=false;return;}
   QMetaObject::invokeMethod(this,[this,branch]{applyStatus(toQ("Closing Discord "+branch+"…"),false,false);},Qt::QueuedConnection);
   if(!closeDiscord(branch)){
@@ -344,11 +382,25 @@ void MainWindow::startInstallFlow(){
    QMetaObject::invokeMethod(this,[this,branch]{applyStatus(toQ("Couldn't close Discord "+branch+". Quit it from the tray icon, then try again."),true,false);applyBusy(false,"");applyProgress(-1);},Qt::QueuedConnection);
    jobRunning_=false;return;
   }
-  QMetaObject::invokeMethod(this,[this]{applyStatus("Copying plugin…",false,false);applyProgress(30);},Qt::QueuedConnection);
-  auto plugin=plugins::fromSource(pluginSrc);
-  Outcome res=plugins::install(plugin,cfg::equicordPath,[](const std::string& s){logLine("INFO",s);});
-  if(!res.succeeded){logLine("ERROR",res.userMessage);QMetaObject::invokeMethod(this,[this,res]{applyStatus(toQ(res.userMessage),true,false);applyBusy(false,"");applyProgress(-1);},Qt::QueuedConnection);reopenDiscord(branch);jobRunning_=false;return;}
-  logLine("OK",res.userMessage);
+  size_t installed=0;
+  Outcome lastFail=ok();
+  for(size_t i=0;i<total;i++){
+   const int pct=(int)(10+(20*(i+1))/total);
+   const QString step=total>1?QString("Copying plugin %1 of %2…").arg(i+1).arg(total):QString("Copying plugin…");
+   QMetaObject::invokeMethod(this,[this,step,pct]{applyStatus(step,false,false);applyProgress(pct);},Qt::QueuedConnection);
+   auto plugin=plugins::fromSource(sources[i]);
+   Outcome res=plugins::install(plugin,cfg::equicordPath,[](const std::string& s){logLine("INFO",s);});
+   if(res.succeeded){installed++;logLine("OK",res.userMessage);continue;}
+   lastFail=res;
+   logLine("ERROR",res.userMessage);
+   if(!res.detail.empty())logLine("ERROR",res.detail);
+  }
+  if(installed==0){
+   QMetaObject::invokeMethod(this,[this,lastFail]{applyStatus(toQ(lastFail.userMessage),true,false);applyBusy(false,"");applyProgress(-1);},Qt::QueuedConnection);
+   reopenDiscord(branch);jobRunning_=false;return;
+  }
+  const size_t failed=total-installed;
+  if(failed>0)logLine("ERROR",std::to_string(failed)+" of "+std::to_string(total)+" plugins didn't install. Building the rest.");
   QMetaObject::invokeMethod(this,[this]{applyStatus("Building Equicord…",false,false);applyProgress(60);},Qt::QueuedConnection);
   Outcome built=builder::build(cfg::equicordPath,cfg::buildDev,[this](const std::string& l){logLine("BUILD",l);});
   if(!built.succeeded){logLine("ERROR",built.userMessage);QMetaObject::invokeMethod(this,[this,built]{applyStatus(toQ(built.userMessage),true,false);applyBusy(false,"");applyProgress(-1);},Qt::QueuedConnection);reopenDiscord(branch);jobRunning_=false;return;}

@@ -3,6 +3,7 @@
 #include <QMainWindow>
 #include <atomic>
 #include <string>
+#include <vector>
 
 class QLabel;
 class QLineEdit;
@@ -57,6 +58,7 @@ private:
     std::string workBlocker();
     void applyEquicordPath(const std::string& folder);
     void setPendingPlugin(const std::string& path);
+    void setPendingPlugins(const std::vector<std::string>& paths);
     void startInstallFlow();
     void refreshLog();
 
@@ -85,6 +87,6 @@ private:
     QTextEdit* logView_ = nullptr;
     QPushButton* logToggleBtn_ = nullptr;
     QString fullPendingPath_;
-    std::string pendingPluginPath_;
+    std::vector<std::string> pendingPlugins_;
     std::atomic<bool> jobRunning_{false};
 };
